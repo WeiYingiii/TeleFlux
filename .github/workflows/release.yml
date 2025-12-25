@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Create Release Zip
+      run: |
+        # 创建临时目录
+        mkdir -p release/TeleFlux-${{ steps.get_version.outputs.VERSION }}
+        
+        # 复制必要文件（排除 .git, .github, cache 等）
+        cp -r bot.py requirements.txt Dockerfile docker-compose.yml release/TeleFlux-${{ steps.get_version.outputs.VERSION }}/
+        cp -r *.md LICENSE release/TeleFlux-${{ steps.get_version.outputs.VERSION }}/
+        
+        # 复制 .env.example 如果存在
+        [ -f .env.example ] && cp .env.example release/TeleFlux-${{ steps.get_version.outputs.VERSION }}/
+        
+        # 创建 version 文件
+        echo "${{ steps.get_version.outputs.VERSION }}" > release/TeleFlux-${{ steps.get_version.outputs.VERSION }}/VERSION
+        
+        # 打包
+        cd release
+        zip -r TeleFlux-${{ steps.get_version.outputs.VERSION }}.zip TeleFlux-${{ steps.get_version.outputs.VERSION }}
+        cd ..
+        
+        # 移动到根目录
+        mv release/TeleFlux-${{ steps.get_version.outputs.VERSION }}.zip .
+
+    - name: Generate Release Notes
+      id: release_notes
+      run: |
+        cat > release_notes.md << 'EOF'
+        ## 🚀 TeleFlux ${{ steps.get_version.outputs.VERSION }}
+        
+        ### 📦 安装方式
+        
+        #### 方法一：使用 GitHub Container Registry (推荐)
+        
+        ```bash
+        # 拉取最新镜像
+        docker pull ghcr.io/${{ github.repository }}:${{ steps.get_version.outputs.VERSION }}
+        
+        # 或使用 latest 标签
+        docker pull ghcr.io/${{ github.repository }}:latest
+        ```
+        
+        **使用镜像运行：**
+        ```bash
+        docker run -d \
+          --name teleflux-bot \
+          --restart unless-stopped \
+          -e API_ID=你的_API_ID \
+          -e API_HASH=你的_API_HASH \
+          -e BOT_TOKEN=你的_BOT_TOKEN \
+          -v /your/path/Music:/data/Music \
+          -v /your/path/Video:/data/Video \
+          -v /your/path/Download:/data/Download \
+          -v $(pwd)/cache:/app/cache \
+          ghcr.io/${{ github.repository }}:${{ steps.get_version.outputs.VERSION }}
+        ```
+        
+        #### 方法二：从源码构建
+        
+        1. 下载并解压 `TeleFlux-${{ steps.get_version.outputs.VERSION }}.zip`
+        2. 配置 `.env` 文件
+        3. 运行 `docker-compose up -d`
+        
+        ### 📋 更新日志
+        
+        详见 [CHANGELOG.md](CHANGELOG.md)
+        
+        ### 🐳 可用的 Docker 标签
+        
+        - `${{ steps.get_version.outputs.VERSION }}` - 完整版本号
+        - `latest` - 最新稳定版
+        - `main` - 主分支最新构建
+        
+        ### 🔗 快速链接
+        
+        - [📖 完整文档](README.md)
+        - [🚀 快速开始](README.md#-快速开始)
+        - [⚙️ 配置说明](README.md#️-配置说明)
+        - [🔧 故障排查](TROUBLESHOOTING.md)
+        EOF
+        
+        echo "RELEASE_NOTES<<EOF" >> $GITHUB_OUTPUT
+        cat release_notes.md >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: TeleFlux-${{ steps.get_version.outputs.VERSION }}.zip
+        body: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
