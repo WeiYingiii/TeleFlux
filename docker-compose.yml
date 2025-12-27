@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  teleflux:
+    # 使用 GitHub Container Registry 镜像（推荐）
+    # 替换 yourusername 为你的 GitHub 用户名
+    image: ghcr.io/yourusername/teleflux:latest
+    
+    # 或使用本地构建的镜像
+    # image: teleflux:latest
+    
+    # 如需从源码构建，取消下面两行注释
+    # build:
+    #   context: .
+    
+    container_name: teleflux-bot
+    restart: unless-stopped
+    
+    # 从 .env 文件加载环境变量(推荐)
+    env_file:
+      - .env
+    
+    # 或者直接在这里设置环境变量
+    # environment:
+    #   - API_ID=你的_API_ID
+    #   - API_HASH=你的_API_HASH
+    #   - BOT_TOKEN=你的_BOT_TOKEN
+    #   - MUSIC_PATH=/data/Music
+    #   - VIDEO_PATH=/data/Video
+    #   - DOWNLOAD_PATH=/data/Download
+    #   - CACHE_PATH=/app/cache
+    
+    volumes:
+      # 将容器内路径映射到宿主机路径
+      # 格式: 宿主机路径:容器内路径
+      - /vol2/1000/Music:/data/Music
+      - /vol2/1000/Video:/data/Video
+      - /vol2/1000/Download:/data/Download
+      - ./cache:/app/cache
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
