@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.7-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![CI](https://img.shields.io/badge/GitHub%20Actions-GHCR%20%2B%20Release-2088FF?logo=githubactions&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.8-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![CI](https://img.shields.io/badge/GitHub%20Actions-GHCR%20Build%20%26%20Push-2088FF?logo=githubactions&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **Telegram → NAS 的“Flux 通道”**：将转发的文件自动归档到服务器目录，并提供实时可视化任务面板。
 
@@ -27,7 +27,7 @@
 - [快速开始](#快速开始)
 - [目录映射](#目录映射)
 - [自动命名策略](#自动命名策略)
-- [CI-CD：GHCR 自动构建与 Release 离线包](#ci-cdghcr-自动构建与-release-离线包)
+- [CI/CD：GHCR 自动构建与发布](#cicdghcr-自动构建与发布)
 - [安全与合规](#安全与合规)
 - [故障排查](#故障排查)
 
@@ -116,78 +116,90 @@ docker compose logs -f --tail=200 teleflux
 
 ---
 
-## CI-CD：GHCR 自动构建与 Release 离线包
+## CI/CD：GHCR 自动构建与发布
 
-本项目内置 GitHub Actions：当您推送版本 Tag（例如 `v1.0.7`）后，会自动：
+本项目内置 GitHub Actions：当您推送版本 Tag（例如 `v1.0.8`）后，会自动构建并发布 **可直接 `docker pull` 的镜像**到 GHCR。
 
-1) 构建并推送镜像到 **GHCR**
-2) 创建同名 **GitHub Release**
-3) 将 **离线镜像包**（`docker save` 导出）作为 Release 资产上传
+> [!IMPORTANT]
+> **GitHub Releases 不能作为 `docker pull` 的镜像源**。可拉取的镜像来自 **GHCR（GitHub Container Registry）**：`ghcr.io/<owner>/<repo>:<tag>`。
+>
+> Releases 的作用是附加文件资产（例如离线备份包），不是容器镜像仓库。
 
 ```
-Flow: tag push → buildx → GHCR push → docker save → Release asset
+Flow: tag push → buildx → GHCR push → (optional) docker save → Release asset
 ```
 
-### 1. 前置条件
+### 1) 前置条件
+
 1. 仓库启用 GitHub Packages（默认启用）。
 2. 仓库 Settings → Actions → General → Workflow permissions 选择 **Read and write permissions**。
 
-> 说明：GHCR 对镜像路径有强制规则：**仓库名必须为小写**。工作流已自动处理（小写化），命令行拉取建议使用下方“自动小写化”写法。
+> 规则提示：GHCR 对镜像路径有强制要求：**owner/repo 必须小写**。即使您的 GitHub 仓库名含大写字母（例如 `WeiYingiii/TeleFlux`），镜像地址也必须用小写（`weiyingiii/teleflux`）。
 
-### 2. 发布步骤（推荐）
-在本地完成版本更新并提交后：
+### 2) 发布步骤（触发自动构建）
 
 ```bash
 git add -A
-git commit -m "chore: release v1.0.7"
+git commit -m "chore: release v1.0.8"
 
-# 创建并推送 tag（触发自动构建）
-git tag v1.0.7
+git tag v1.0.8
 git push origin main --tags
 ```
 
-### 3. 拉取并使用镜像（自动小写化，复制即用）
+### 3) 直接拉取 GitHub 构建的镜像（推荐）
 
 GHCR 镜像格式：
-- `ghcr.io/<owner>/<repo>:<tag>`（注意 **owner/repo 必须小写**）
+- `ghcr.io/<owner>/<repo>:<tag>`
 
-推荐用一条命令自动小写化（避免复制粘贴踩坑）：
+如果您的仓库名包含大写字母，建议用“自动小写化”写法（复制即用）：
 
 ```bash
 OWNER_REPO="<OWNER>/<REPO>"  # 例如 "WeiYingiii/TeleFlux"
 IMAGE="ghcr.io/$(echo "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')"
 
-docker pull "$IMAGE:1.0.7"
+docker pull "$IMAGE:1.0.8"
 ```
 
-Docker Compose 推荐用固定镜像地址（已小写）或在 `.env` 中维护：
+或者直接写死小写（更省心，推荐在生产上这样做）：
+
+```bash
+docker pull ghcr.io/weiyingiii/teleflux:1.0.8
+```
+
+Docker Compose 示例：
 
 ```yaml
 services:
-  teleflux-bot:
-    image: ghcr.io/<owner>/<repo>:1.0.7
+  teleflux:
+    image: ghcr.io/<owner>/<repo>:1.0.8   # 注意：owner/repo 请填小写
     env_file:
       - .env
     restart: unless-stopped
 ```
 
-### 4. 自动上传到 GitHub Releases（离线分发）
-当您推送 `vX.Y.Z` Tag 后，工作流除了会推送到 GHCR，还会自动创建同名 GitHub Release，并附带一个离线镜像包：
-- `teleflux-image-<version>-linux-amd64.tar.gz`
+### 4) Private 包拉取（需要登录）
 
-下载该 Release 资产后，可在任意已安装 Docker 的 Linux x86_64 机器上离线导入：
+> [!TIP]
+> Public 包无需登录；Private 包在服务器上 `docker pull` 前需要先 `docker login ghcr.io`。
+
+在 GitHub 创建 PAT（Personal Access Token）：
+- Public：`read:packages`
+- Private：`read:packages` + `repo`
+
 ```bash
-gunzip -c teleflux-image-1.0.7-linux-amd64.tar.gz | docker load
-# 或者
-# gzip -d teleflux-image-1.0.7-linux-amd64.tar.gz
-# docker load -i teleflux-image-1.0.7-linux-amd64.tar
+echo "<YOUR_PAT>" | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
+```
 
+### 5) Release 离线包（可选，用于备份/离线分发）
+
+如果您需要离线导入，工作流会为 `linux/amd64` 额外生成一个 `docker save` 备份包，并上传到同名 GitHub Release：
+
+```bash
+gunzip -c teleflux-image-1.0.8-linux-amd64.tar.gz | docker load
 docker images | grep teleflux
 ```
 
-说明：
-1. Release 附件默认导出的是 `linux/amd64`（与 GitHub Actions Runner 架构一致）。`linux/arm64` 请直接使用 GHCR 拉取。
-2. GitHub Release 单个附件存在大小限制；若镜像体积较大，建议以 GHCR 作为主要分发渠道。
+说明：Release 附件默认导出 `linux/amd64`（与 GitHub Actions Runner 架构一致）；`linux/arm64` 请直接从 GHCR 拉取。
 
 ---
 
