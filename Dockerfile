@@ -17,5 +17,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # NOTE: Keep this list explicit to avoid copying local secrets into the image.
 COPY bot.py /app/bot.py
 COPY task_manager.py /app/task_manager.py
+COPY runtime_settings.py /app/runtime_settings.py
 
 CMD ["python", "/app/bot.py"]

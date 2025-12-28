@@ -5,6 +5,7 @@ import os
 import re
 import asyncio
 import time
+from urllib.parse import urlparse, unquote
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from telethon import TelegramClient, events, Button
@@ -18,6 +19,17 @@ from telethon.errors import FloodWaitError, RPCError
 import logging
 
 from task_manager import TaskManager
+from runtime_settings import (
+    RuntimeSettings,
+    default_settings_path,
+    load_settings,
+    save_settings,
+)
+
+try:
+    import socks  # type: ignore
+except Exception:  # pragma: no cover
+    socks = None
 
 # 配置日志
 logging.basicConfig(
@@ -26,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 项目版本
-VERSION = "1.0.9"
+VERSION = "1.0.11"
 
 # 从环境变量获取配置
 API_ID = os.getenv("API_ID")
@@ -95,6 +107,160 @@ VIDEO_PATH = os.getenv("VIDEO_PATH", "/vol2/1000/Video")
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "/vol2/1000/Download")
 CACHE_PATH = os.getenv("CACHE_PATH", "./cache")
 
+# 管理类命令权限（可选）
+# - 未设置时：只允许在私聊中执行 /proxy、/concurrency
+# - 设置后：允许指定用户 ID 在任意聊天执行
+def _parse_int_set(value: str) -> set[int]:
+    out: set[int] = set()
+    for part in (value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except Exception:
+            continue
+    return out
+
+
+ADMIN_USER_IDS = _parse_int_set(os.getenv("ADMIN_USER_IDS", ""))
+
+
+def _parse_int_list(value: str) -> list[int]:
+    out: list[int] = []
+    for part in (value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except Exception:
+            continue
+    return out
+
+
+STARTUP_NOTIFY_CHAT_IDS = _parse_int_list(os.getenv("STARTUP_NOTIFY_CHAT_ID", "") or os.getenv("STARTUP_NOTIFY_CHAT_IDS", ""))
+
+# 运行时可持久化设置（通过 Telegram /命令修改，保存到 cache 目录）
+SETTINGS_PATH = default_settings_path(CACHE_PATH)
+runtime_settings = load_settings(SETTINGS_PATH)
+
+
+class ConcurrencyLimiter:
+    """A dynamic concurrency limiter that can be adjusted at runtime.
+
+    asyncio.Semaphore cannot be resized safely. This limiter keeps a running
+    counter and a condition to support changing the limit while the bot runs.
+    """
+
+    def __init__(self, limit: int):
+        self._limit = max(1, int(limit))
+        self._running = 0
+        self._cond = asyncio.Condition()
+
+    async def acquire(self) -> None:
+        async with self._cond:
+            while self._running >= self._limit:
+                await self._cond.wait()
+            self._running += 1
+
+    async def release(self) -> None:
+        async with self._cond:
+            self._running -= 1
+            if self._running < 0:
+                self._running = 0
+            self._cond.notify_all()
+
+    async def set_limit(self, new_limit: int) -> None:
+        async with self._cond:
+            self._limit = max(1, int(new_limit))
+            self._cond.notify_all()
+
+    def get_limit(self) -> int:
+        return self._limit
+
+    def get_running(self) -> int:
+        return self._running
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.release()
+
+
+def _parse_int_list_env(name: str) -> List[int]:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return []
+    out: List[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except Exception:
+            continue
+    return out
+
+
+def _apply_env_proxy(proxy_url: Optional[str]) -> None:
+    keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    if proxy_url:
+        for k in keys:
+            os.environ[k] = proxy_url
+    else:
+        for k in keys:
+            os.environ.pop(k, None)
+
+
+def _telethon_proxy_from_url(proxy_url: str):
+    """Convert a proxy URL to Telethon's proxy tuple.
+
+    Supported schemes: socks5, socks5h, socks4, socks4a, http, https.
+    """
+    if not proxy_url:
+        return None
+
+    if socks is None:
+        raise RuntimeError("pysocks is not installed; cannot use proxy")
+
+    p = urlparse(proxy_url)
+    scheme = (p.scheme or "").lower()
+    host = p.hostname
+    port = p.port
+    if not host or not port:
+        raise ValueError("proxy url must include host and port")
+
+    username = unquote(p.username) if p.username else None
+    password = unquote(p.password) if p.password else None
+
+    rdns = True
+    if scheme in ("socks5", "socks5h"):
+        proxy_type = socks.SOCKS5
+        rdns = True
+    elif scheme in ("socks4", "socks4a"):
+        proxy_type = socks.SOCKS4
+        rdns = True
+    elif scheme in ("http", "https"):
+        proxy_type = socks.HTTP
+        rdns = False
+    else:
+        raise ValueError(f"unsupported proxy scheme: {scheme}")
+
+    if username is not None or password is not None:
+        return (proxy_type, host, int(port), rdns, username or "", password or "")
+    return (proxy_type, host, int(port), rdns)
+
 # -----------------------------
 # 全局状态
 # -----------------------------
@@ -118,13 +284,39 @@ download_history: Dict[int, List[Dict[str, Any]]] = {}
 # - 当某个 chat 的任务数降为 0 时，5 秒后执行一次清理回调（若期间无新任务）
 task_manager = TaskManager(cleanup_delay_s=5.0)
 
+# 代理（通过 /proxy 命令写入 settings 后，重启容器生效）
+proxy_url_effective = (
+    os.getenv("TELEFLUX_PROXY")
+    or os.getenv("PROXY_URL")
+    or runtime_settings.proxy_url
+)
+_apply_env_proxy(proxy_url_effective)
+
+telethon_proxy = None
+if proxy_url_effective:
+    try:
+        telethon_proxy = _telethon_proxy_from_url(proxy_url_effective)
+        logger.info("Proxy enabled (via settings/env).")
+    except Exception as e:
+        logger.error("Invalid proxy config, ignored: %s (%s)", proxy_url_effective, e)
+        telethon_proxy = None
+
+# 下载并发控制（避免 Telethon 同时打开过多连接导致卡住/超时）
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
+if runtime_settings.max_concurrent_downloads is not None:
+    MAX_CONCURRENT_DOWNLOADS = int(runtime_settings.max_concurrent_downloads)
+concurrency_limiter = ConcurrencyLimiter(MAX_CONCURRENT_DOWNLOADS)
+
+# 下载“卡住”判定：超过该秒数无任何进度更新则中止该任务并标记失败
+DOWNLOAD_STALL_TIMEOUT_S = int(os.getenv("DOWNLOAD_STALL_TIMEOUT_S", "180"))
+
 # 确保所有目录存在
 for path in [MUSIC_PATH, VIDEO_PATH, DOWNLOAD_PATH, CACHE_PATH]:
     os.makedirs(path, exist_ok=True)
 
 # 初始化客户端
 client = TelegramClient(
-    os.path.join(CACHE_PATH, "bot_session"), API_ID, API_HASH
+    os.path.join(CACHE_PATH, "bot_session"), API_ID, API_HASH, proxy=telethon_proxy
 ).start(bot_token=BOT_TOKEN)
 
 
@@ -768,16 +960,25 @@ async def download_with_progress(download_id: int):
     file_size = int(info.get("file_size", 0) or 0)
     resume_from = int(info.get("resume_from", 0) or 0)
 
+    # 用于速度/ETA 计算
     last_update_ts = 0.0
     last_bytes = resume_from
     last_ts = time.time()
 
+    # 用于“卡住”检测（跨 DC / 网络不可达等场景常见）
+    last_progress_mono = time.monotonic()
+    last_progress_bytes = resume_from
+
     async def progress_callback(current, total):
-        nonlocal last_update_ts, last_bytes, last_ts
+        nonlocal last_update_ts, last_bytes, last_ts, last_progress_mono, last_progress_bytes
 
         # current 为本次 session 的已下载量；加上 resume_from 才是总计
         downloaded = int(current) + resume_from
         info["downloaded"] = downloaded
+
+        # 记录最近进度（用于 watchdog 判定是否“卡住”）
+        last_progress_mono = time.monotonic()
+        last_progress_bytes = downloaded
 
         # 暂停控制：在 callback 内阻塞最安全（Telethon 会持续调用）
         while info.get("paused", False):
@@ -821,29 +1022,73 @@ async def download_with_progress(download_id: int):
             last_update_ts = now
             await update_dashboard(chat_id)
 
-    finished_chat_id: Optional[int] = chat_id
-    did_finish = False
+    async def _stall_watchdog(download_task: asyncio.Task):
+        """如果长时间无任何进度更新，则中止该任务。
 
-    try:
+        典型触发原因：文件位于其他 DC，目标 DC 网络不可达/被墙/路由异常；
+        或并发过高导致 Telethon 连接建立/握手卡住。
+        """
+        try:
+            while not download_task.done():
+                await asyncio.sleep(5)
+                # 暂停时不判定卡住
+                if info.get("state") != "downloading":
+                    continue
+
+                idle_s = time.monotonic() - last_progress_mono
+                if idle_s >= DOWNLOAD_STALL_TIMEOUT_S and info.get("downloaded", 0) == last_progress_bytes:
+                    info["cancel_reason"] = "stalled"
+                    logger.error(
+                        "下载卡住超时，已中止任务。download_id=%s chat_id=%s idle_s=%s downloaded=%s/%s",
+                        download_id,
+                        chat_id,
+                        int(idle_s),
+                        info.get("downloaded", 0),
+                        file_size,
+                    )
+                    download_task.cancel()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _download_body():
+        """实际下载过程（可能被 watchdog 取消）。"""
         info["state"] = "downloading"
         await update_dashboard(chat_id, force=True)
+
+        # 记录文件所在 DC（便于排障：跨 DC 时更容易暴露网络问题）
+        try:
+            doc = getattr(getattr(message, "media", None), "document", None)
+            dc_id = getattr(doc, "dc_id", None)
+            if dc_id is not None:
+                info["dc_id"] = dc_id
+                logger.info("Download target DC: chat_id=%s download_id=%s dc_id=%s", chat_id, download_id, dc_id)
+        except Exception:
+            pass
 
         mode = "ab" if resume_from > 0 else "wb"
         with open(temp_path, mode) as f:
             if resume_from > 0:
-                async for chunk in client.iter_download(
-                    message.media, offset=resume_from
-                ):
+                async for chunk in client.iter_download(message.media, offset=resume_from):
                     f.write(chunk)
-                    await progress_callback(
-                        f.tell() - resume_from, file_size - resume_from
-                    )
+                    await progress_callback(f.tell() - resume_from, file_size - resume_from)
             else:
-                await client.download_media(
-                    message.media, file=f, progress_callback=progress_callback
-                )
+                await client.download_media(message.media, file=f, progress_callback=progress_callback)
 
         os.rename(temp_path, final_path)
+
+    finished_chat_id: Optional[int] = chat_id
+    did_finish = False
+
+    download_task: Optional[asyncio.Task] = None
+    watchdog_task: Optional[asyncio.Task] = None
+
+    try:
+        # 控制并发：大量并发时“跨 DC 下载”更容易出现连接卡住
+        async with concurrency_limiter:
+            download_task = asyncio.create_task(_download_body())
+            watchdog_task = asyncio.create_task(_stall_watchdog(download_task))
+            await download_task
         info["state"] = "completed"
         info["downloaded"] = file_size
         _push_history(chat_id, info["display_name"], "✅ 完成")
@@ -854,9 +1099,18 @@ async def download_with_progress(download_id: int):
         did_finish = True
 
     except asyncio.CancelledError:
-        # task.cancel() 或其他 CancelledError
-        info["state"] = "cancelled"
-        _push_history(chat_id, info["display_name"], "❌ 已取消")
+        # task.cancel()：可能来自用户取消，也可能来自 watchdog 的“卡住超时”中止
+        if info.get("cancel_reason") == "stalled":
+            info["state"] = "failed"
+            _push_history(
+                chat_id,
+                info["display_name"],
+                "⚠️ 失败",
+                note="(Stalled/跨DC连接超时)",
+            )
+        else:
+            info["state"] = "cancelled"
+            _push_history(chat_id, info["display_name"], "❌ 已取消")
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -879,6 +1133,13 @@ async def download_with_progress(download_id: int):
         did_finish = True
 
     finally:
+        # 结束 watchdog
+        if watchdog_task and not watchdog_task.done():
+            try:
+                watchdog_task.cancel()
+            except Exception:
+                pass
+
         # 统一做任务计数 decrement：确保即使刷新异常也不会导致“永远不清理”。
         if did_finish and finished_chat_id is not None:
             try:
@@ -1081,12 +1342,10 @@ async def start_download(
     # =========== 修改结束 ===========
 
     # 任务计数 + 取消可能存在的“空闲延迟清理”
+    # 注意：只调用一次，避免计数翻倍导致“永不清理”等异常。
     await task_manager.task_started(chat_id)
 
     await ensure_dashboard(chat_id)
-
-    # 任务开始：用于“延迟清理”防抖
-    await task_manager.task_started(chat_id)
 
     filepath = os.path.join(target_path, filename)
     temp_filepath = filepath + ".downloading"
@@ -1238,6 +1497,157 @@ async def start_command(event):
     )
 
 
+def _is_admin_event(event) -> bool:
+    """Admin gate for management commands.
+
+    - If ADMIN_USER_IDS is configured: only allow those users.
+    - Otherwise: only allow in private chats (avoid anyone in groups changing settings).
+    """
+    try:
+        if ADMIN_USER_IDS:
+            return int(getattr(event, "sender_id", 0) or 0) in ADMIN_USER_IDS
+        return bool(getattr(event, "is_private", False))
+    except Exception:
+        return False
+
+
+@client.on(events.NewMessage(pattern=r"^/concurrency(?:\s+.*)?$"))
+async def concurrency_command(event):
+    """Set or show runtime concurrency limit.
+
+    Usage:
+      /concurrency            -> show current
+      /concurrency 3          -> set to 3
+    """
+    if not _is_admin_event(event):
+        await event.respond("❌ 无权限：请在私聊中使用该命令，或设置 ADMIN_USER_IDS")
+        return
+
+    text = (event.raw_text or "").strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) == 1:
+        await event.respond(
+            f"当前并发上限: {concurrency_limiter.get_limit()}\n"
+            f"正在运行: {concurrency_limiter.get_running()}\n\n"
+            "设置示例: /concurrency 3"
+        )
+        return
+
+    arg = parts[1].strip()
+    if not arg.isdigit():
+        await event.respond("参数错误：请输入纯数字，例如 /concurrency 3")
+        return
+
+    new_limit = int(arg)
+    if new_limit < 1 or new_limit > 50:
+        await event.respond("并发范围建议 1~50，请重新输入。")
+        return
+
+    await concurrency_limiter.set_limit(new_limit)
+    global MAX_CONCURRENT_DOWNLOADS
+    MAX_CONCURRENT_DOWNLOADS = new_limit
+
+    runtime_settings.max_concurrent_downloads = new_limit
+    save_settings(SETTINGS_PATH, runtime_settings)
+
+    await event.respond(
+        f"✅ 并发已更新为 {new_limit}\n"
+        "说明：对新任务立即生效；已在运行的任务不会被强制中断。"
+    )
+
+
+@client.on(events.NewMessage(pattern=r"^/proxy(?:\s+.*)?$"))
+async def proxy_command(event):
+    """Set or show container/network proxy.
+
+    This proxy is applied at process/container level (env) and also used for
+    Telethon connection **on next startup**.
+
+    Usage:
+      /proxy                  -> show saved proxy
+      /proxy off              -> disable
+      /proxy socks5://host:1080
+      /proxy socks5://user:pass@host:1080
+      /proxy http://host:3128
+    """
+    if not _is_admin_event(event):
+        await event.respond("❌ 无权限：请在私聊中使用该命令，或设置 ADMIN_USER_IDS")
+        return
+
+    text = (event.raw_text or "").strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) == 1:
+        saved = runtime_settings.proxy_url or "(未设置)"
+        await event.respond(
+            "当前代理设置（持久化）:\n"
+            f"  {saved}\n\n"
+            "设置示例: /proxy socks5://user:pass@127.0.0.1:1080\n"
+            "关闭代理: /proxy off\n\n"
+            "注意：代理对 Telegram 连接参数需要在启动时生效，设置后请重启容器。"
+        )
+        return
+
+    arg = parts[1].strip()
+    low = arg.lower()
+    if low in {"off", "disable", "none", "0"}:
+        runtime_settings.proxy_url = None
+        save_settings(SETTINGS_PATH, runtime_settings)
+        _apply_env_proxy(None)
+        await event.respond(
+            "✅ 已关闭代理（设置已保存）。\n"
+            "为确保 Telegram 连接不再使用旧代理，请重启容器：docker restart teleflux-bot"
+        )
+        return
+
+    # Validate format early
+    try:
+        _ = _telethon_proxy_from_url(arg)  # just validation
+    except Exception as e:
+        await event.respond(
+            "❌ 代理格式不正确或不支持。\n"
+            "支持：socks5/socks5h/socks4/socks4a/http/https\n"
+            f"错误信息: {type(e).__name__}: {e}\n\n"
+            "示例: /proxy socks5://127.0.0.1:1080"
+        )
+        return
+
+    runtime_settings.proxy_url = arg
+    save_settings(SETTINGS_PATH, runtime_settings)
+    _apply_env_proxy(arg)
+
+    await event.respond(
+        "✅ 代理已保存。\n"
+        f"当前设置: {arg}\n\n"
+        "重要：Telegram 连接代理需要在启动时设置，请重启容器后生效：\n"
+        "  docker restart teleflux-bot"
+    )
+
+
+async def _send_startup_notification() -> None:
+    """Send a one-time startup notification after the container is running."""
+    if not STARTUP_NOTIFY_CHAT_IDS:
+        return
+
+    # Give Telethon a moment to finish the initial handshake.
+    await asyncio.sleep(1)
+
+    proxy_show = runtime_settings.proxy_url or "(未设置)"
+    msg = (
+        f"✅ TeleFlux Bot 已启动\n"
+        f"版本: v{VERSION}\n"
+        f"并发上限: {concurrency_limiter.get_limit()}\n"
+        f"代理: {proxy_show}"
+    )
+
+    for cid in STARTUP_NOTIFY_CHAT_IDS:
+        try:
+            await client.send_message(cid, msg)
+        except Exception as e:
+            logger.warning("Failed to send startup notification to %s: %s", cid, e)
+
+
 def main():
     """主函数"""
     logger.info("=" * 60)
@@ -1252,6 +1662,12 @@ def main():
     logger.info("")
     logger.info("✅ 配置验证通过,开始连接 Telegram...")
     logger.info("=" * 60)
+
+    # 容器成功运行后通知（可选：设置 STARTUP_NOTIFY_CHAT_ID）
+    try:
+        client.loop.create_task(_send_startup_notification())
+    except Exception:
+        pass
 
     client.run_until_disconnected()
 

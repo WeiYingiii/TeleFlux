@@ -15,6 +15,24 @@ services:
       # Optional
       TZ: "${TZ:-Asia/Shanghai}"
 
+      # Optional: send a "bot started" message to these chat IDs (comma-separated)
+      # Example: STARTUP_NOTIFY_CHAT_ID=123456789
+      STARTUP_NOTIFY_CHAT_ID: "${STARTUP_NOTIFY_CHAT_ID:-}"
+
+      # Optional: restrict management commands (/proxy, /concurrency) by user IDs (comma-separated)
+      # Example: ADMIN_USER_IDS=123456789,987654321
+      ADMIN_USER_IDS: "${ADMIN_USER_IDS:-}"
+
+      # Optional: set proxy at startup (same format as /proxy)
+      # Example: TELEFLUX_PROXY=socks5://user:pass@127.0.0.1:1080
+      TELEFLUX_PROXY: "${TELEFLUX_PROXY:-}"
+
+      # Tuning (optional)
+      # Reduce concurrency if you see "File lives in another DC" then stuck at 0%
+      MAX_CONCURRENT_DOWNLOADS: "${MAX_CONCURRENT_DOWNLOADS:-3}"
+      # If no progress for N seconds, the task will be marked failed (helps avoid endless hangs)
+      DOWNLOAD_STALL_TIMEOUT_S: "${DOWNLOAD_STALL_TIMEOUT_S:-180}"
+
       # Container internal paths (do not change unless you also change bot config)
       MUSIC_PATH: /data/Music
       VIDEO_PATH: /data/Video
