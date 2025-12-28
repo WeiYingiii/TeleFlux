@@ -1,4 +1,4 @@
-name: Build and publish Docker image
+name: Build, publish Docker image, and attach to GitHub Release
 
 on:
   push:
@@ -6,8 +6,11 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+# Required for:
+# - packages: write  -> push to GHCR
+# - contents: write  -> create GitHub Release + upload assets
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -44,7 +47,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -55,3 +58,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # GitHub Releases cannot "host" a container image registry entry.
+      # What we can do is export the built image (linux/amd64) as a tarball
+      # and upload it as a Release asset.
+      - name: Export linux/amd64 image as tarball for Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+          VERSION="${TAG_NAME#v}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+
+          echo "Pulling image: ${IMAGE}"
+          docker pull "${IMAGE}"
+
+          ASSET="teleflux-image-${VERSION}-linux-amd64.tar.gz"
+          echo "Saving image to: ${ASSET}"
+          docker save "${IMAGE}" | gzip > "${ASSET}"
+
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release and upload image tarball
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ASSET }}

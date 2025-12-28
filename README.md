@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.4-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.5-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **TeleFlux 是一个高效的 Telegram 下载机器人，旨在成为连接 Telegram 资源与 NAS/服务器的自动化桥梁。**
 
@@ -83,7 +83,7 @@ Token 泄露处理：如果您不慎在群组或公开场合泄露了 BOT_TOKEN�
 
 ## 🧰 GitHub 自动构建并发布 Docker 镜像 (GHCR)
 
-本项目内置 GitHub Actions 工作流：当您 **更新版本并推送 Git Tag**（例如 `v1.0.4`）后，会自动在 GitHub Container Registry (GHCR) 构建并推送镜像。
+本项目内置 GitHub Actions 工作流：当您 **更新版本并推送 Git Tag**（例如 `v1.0.5`）后，会自动在 GitHub Container Registry (GHCR) 构建并推送镜像。
 
 ### 1. 前置条件
 1. 仓库需启用 GitHub Packages（默认启用）。
@@ -94,10 +94,10 @@ Token 泄露处理：如果您不慎在群组或公开场合泄露了 BOT_TOKEN�
 
 ```bash
 git add -A
-git commit -m "chore: release v1.0.4"
+git commit -m "chore: release v1.0.5"
 
 # 创建并推送 tag（触发自动构建）
-git tag v1.0.4
+git tag v1.0.5
 git push origin main --tags
 ```
 
@@ -107,16 +107,34 @@ git push origin main --tags
 
 例如：
 ```bash
-docker pull ghcr.io/<OWNER>/<REPO>:v1.0.4
+docker pull ghcr.io/<OWNER>/<REPO>:1.0.5
 ```
 
 Docker Compose 也可以直接改为使用 `image`：
 ```yaml
 services:
   teleflux-bot:
-    image: ghcr.io/<OWNER>/<REPO>:v1.0.4
+    image: ghcr.io/<OWNER>/<REPO>:1.0.5
     env_file:
       - .env
     restart: unless-stopped
 ```
 
+
+### 4. 自动上传镜像到 GitHub Releases（离线分发）
+当您推送 `vX.Y.Z` Tag 后，工作流除了会推送到 GHCR，还会自动创建同名 GitHub Release，并附带一个离线镜像包：
+- `teleflux-image-<version>-linux-amd64.tar.gz`
+
+下载该 Release 资产后，可在任意已安装 Docker 的 Linux x86_64 机器上离线导入：
+```bash
+gunzip -c teleflux-image-1.0.5-linux-amd64.tar.gz | docker load
+# 或者
+# gzip -d teleflux-image-1.0.5-linux-amd64.tar.gz
+# docker load -i teleflux-image-1.0.5-linux-amd64.tar
+
+docker images | grep teleflux
+```
+
+说明：
+1. Release 附件默认导出的是 `linux/amd64`（与 GitHub Actions Runner 架构一致）。`linux/arm64` 请直接使用 GHCR 拉取。
+2. GitHub Release 单个附件存在大小限制；若镜像体积较大，建议以 GHCR 作为主要分发渠道。
