@@ -24,6 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # GHCR requires the repository path to be lowercase.
+      # Example: ghcr.io/Owner/Repo is invalid; must be ghcr.io/owner/repo
+      - name: Normalize image name (lowercase)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
