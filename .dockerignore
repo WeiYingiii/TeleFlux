@@ -1,0 +1,19 @@
+# VCS
+.git
+.gitignore
+
+# CI
+.github
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local secrets / env
+.env
+*.env
+
+# Runtime cache
+cache/

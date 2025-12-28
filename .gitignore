@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Telethon sessions
+*.session
+*.session-journal
+
+# Logs
+*.log
+
+# Local runtime
+cache/*
+!cache/.gitkeep
+data/
+downloads/
+.DS_Store

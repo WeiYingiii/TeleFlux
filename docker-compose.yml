@@ -1,0 +1,30 @@
+services:
+  teleflux:
+    container_name: teleflux-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # === Fill in these three parameters ===
+      API_ID: "YOUR_API_ID"
+      API_HASH: "YOUR_API_HASH"
+      BOT_TOKEN: "YOUR_BOT_TOKEN"
+
+      # Optional
+      TZ: "Asia/Shanghai"
+
+      # Container internal paths (do not change unless you also change bot config)
+      MUSIC_PATH: /data/Music
+      VIDEO_PATH: /data/Video
+      DOWNLOAD_PATH: /data/Download
+      CACHE_PATH: /app/cache
+
+    volumes:
+      # === Replace host paths with your actual folders ===
+      - "/vol2/1000/Music:/data/Music"
+      - "/vol2/1000/Video:/data/Video"
+      - "/vol2/1000/Download:/data/Download"
+
+      # Keep cache persistent
+      - "./cache:/app/cache"
+    restart: unless-stopped
