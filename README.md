@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.8-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![CI](https://img.shields.io/badge/GitHub%20Actions-GHCR%20Build%20%26%20Push-2088FF?logo=githubactions&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.9-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **Telegram → NAS 的“Flux 通道”**：将转发的文件自动归档到服务器目录，并提供实时可视化任务面板。
 
@@ -27,7 +27,6 @@
 - [快速开始](#快速开始)
 - [目录映射](#目录映射)
 - [自动命名策略](#自动命名策略)
-- [CI/CD：GHCR 自动构建与发布](#cicdghcr-自动构建与发布)
 - [安全与合规](#安全与合规)
 - [故障排查](#故障排查)
 
@@ -46,50 +45,82 @@
 
 ## 快速开始
 
-> 推荐使用 Docker Compose 部署；凭证建议写入 `.env`，避免直接提交到仓库。
+本项目提供 **GHCR 镜像**，您无需克隆仓库：
 
-### 1) 环境准备
-确保您的服务器已安装 Docker 及 Docker Compose。
+- **Docker Compose**：只需要创建一个 `docker-compose.yml`，然后 `docker compose up -d`。
+- **Docker Run**：只需要一条命令即可启动。
 
-### 2) 配置凭证（建议 .env）
+> [!IMPORTANT]
+> GHCR 对镜像地址有强制要求：`owner/repo` 必须全小写。
+> 
+> 例如 GitHub 仓库是 `WeiYingiii/TeleFlux`，镜像地址必须写为：`ghcr.io/weiyingiii/teleflux:latest`。
 
-在项目目录创建 `.env`：
+### 方式 A：只创建一个 docker-compose.yml 即可运行（推荐）
 
-```bash
-API_ID=1234567
-API_HASH=your_api_hash
-BOT_TOKEN=your_bot_token
-```
-
-### 3) 配置部署
-
-编辑 `docker-compose.yml`，将目录映射改为符合您 NAS/服务器结构的路径。
-
-> **注意**：宿主机目录（`:` 左侧路径）可根据您的 NAS 实际结构进行修改。
+在任意目录新建 `docker-compose.yml`（把 `API_ID / API_HASH / BOT_TOKEN` 填上；目录映射按您的 NAS 实际路径改）：
 
 ```yaml
 services:
   teleflux:
-    # 本地构建：image 可保持为本地名
-    # image: teleflux:latest
-    # 使用 GHCR：替换为 ghcr.io/<owner>/<repo>:<tag>（owner/repo 必须小写）
-    image: teleflux:latest
-    container_name: teleflux
+    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.9
+    image: ghcr.io/weiyingiii/teleflux:latest
+    container_name: teleflux-bot
     restart: unless-stopped
-    env_file:
-      - .env
+
+    environment:
+      API_ID: "1234567"
+      API_HASH: "your_api_hash"
+      BOT_TOKEN: "your_bot_token"
+      TZ: "Asia/Shanghai"
+
+      # 容器内固定路径（一般无需改）
+      MUSIC_PATH: /data/Music
+      VIDEO_PATH: /data/Video
+      DOWNLOAD_PATH: /data/Download
+      CACHE_PATH: /app/cache
+
     volumes:
-      # 格式: /宿主机路径:/容器内路径
+      # 将宿主机目录映射到容器（按您的 NAS 路径调整）
       - /vol2/1000/Music:/data/Music
       - /vol2/1000/Video:/data/Video
       - /vol2/1000/Download:/data/Download
-      - ./cache:/app/cache         # 缓存持久化
+      - ./cache:/app/cache
+```
 
-# 构建并后台启动
-docker compose up -d --build
+启动：
 
-# 查看运行日志
+```bash
+docker compose up -d
 docker compose logs -f --tail=200 teleflux
+```
+
+### 方式 B：一条 docker run 命令启动
+
+把参数替换成您的真实值与真实路径：
+
+```bash
+docker run -d \
+  --name teleflux-bot \
+  --restart unless-stopped \
+  -e API_ID="1234567" \
+  -e API_HASH="your_api_hash" \
+  -e BOT_TOKEN="your_bot_token" \
+  -e TZ="Asia/Shanghai" \
+  -e MUSIC_PATH=/data/Music \
+  -e VIDEO_PATH=/data/Video \
+  -e DOWNLOAD_PATH=/data/Download \
+  -e CACHE_PATH=/app/cache \
+  -v /vol2/1000/Music:/data/Music \
+  -v /vol2/1000/Video:/data/Video \
+  -v /vol2/1000/Download:/data/Download \
+  -v $(pwd)/cache:/app/cache \
+  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.9
+```
+
+查看日志：
+
+```bash
+docker logs -f --tail=200 teleflux-bot
 ```
 
 ---
@@ -116,96 +147,9 @@ docker compose logs -f --tail=200 teleflux
 
 ---
 
-## CI/CD：GHCR 自动构建与发布
-
-本项目内置 GitHub Actions：当您推送版本 Tag（例如 `v1.0.8`）后，会自动构建并发布 **可直接 `docker pull` 的镜像**到 GHCR。
-
-> [!IMPORTANT]
-> **GitHub Releases 不能作为 `docker pull` 的镜像源**。可拉取的镜像来自 **GHCR（GitHub Container Registry）**：`ghcr.io/<owner>/<repo>:<tag>`。
->
-> Releases 的作用是附加文件资产（例如离线备份包），不是容器镜像仓库。
-
-```
-Flow: tag push → buildx → GHCR push → (optional) docker save → Release asset
-```
-
-### 1) 前置条件
-
-1. 仓库启用 GitHub Packages（默认启用）。
-2. 仓库 Settings → Actions → General → Workflow permissions 选择 **Read and write permissions**。
-
-> 规则提示：GHCR 对镜像路径有强制要求：**owner/repo 必须小写**。即使您的 GitHub 仓库名含大写字母（例如 `WeiYingiii/TeleFlux`），镜像地址也必须用小写（`weiyingiii/teleflux`）。
-
-### 2) 发布步骤（触发自动构建）
-
-```bash
-git add -A
-git commit -m "chore: release v1.0.8"
-
-git tag v1.0.8
-git push origin main --tags
-```
-
-### 3) 直接拉取 GitHub 构建的镜像（推荐）
-
-GHCR 镜像格式：
-- `ghcr.io/<owner>/<repo>:<tag>`
-
-如果您的仓库名包含大写字母，建议用“自动小写化”写法（复制即用）：
-
-```bash
-OWNER_REPO="<OWNER>/<REPO>"  # 例如 "WeiYingiii/TeleFlux"
-IMAGE="ghcr.io/$(echo "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')"
-
-docker pull "$IMAGE:1.0.8"
-```
-
-或者直接写死小写（更省心，推荐在生产上这样做）：
-
-```bash
-docker pull ghcr.io/weiyingiii/teleflux:1.0.8
-```
-
-Docker Compose 示例：
-
-```yaml
-services:
-  teleflux:
-    image: ghcr.io/<owner>/<repo>:1.0.8   # 注意：owner/repo 请填小写
-    env_file:
-      - .env
-    restart: unless-stopped
-```
-
-### 4) Private 包拉取（需要登录）
-
-> [!TIP]
-> Public 包无需登录；Private 包在服务器上 `docker pull` 前需要先 `docker login ghcr.io`。
-
-在 GitHub 创建 PAT（Personal Access Token）：
-- Public：`read:packages`
-- Private：`read:packages` + `repo`
-
-```bash
-echo "<YOUR_PAT>" | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
-```
-
-### 5) Release 离线包（可选，用于备份/离线分发）
-
-如果您需要离线导入，工作流会为 `linux/amd64` 额外生成一个 `docker save` 备份包，并上传到同名 GitHub Release：
-
-```bash
-gunzip -c teleflux-image-1.0.8-linux-amd64.tar.gz | docker load
-docker images | grep teleflux
-```
-
-说明：Release 附件默认导出 `linux/amd64`（与 GitHub Actions Runner 架构一致）；`linux/arm64` 请直接从 GHCR 拉取。
-
----
-
 ## 安全与合规
 
-- **敏感信息保护**：`API_ID` / `API_HASH` / `BOT_TOKEN` 属于私密凭证，建议只放 `.env`，并确保 `.env` 在 `.gitignore` 中。
+- **敏感信息保护**：`API_ID` / `API_HASH` / `BOT_TOKEN` 属于私密凭证。您可以写在 `docker-compose.yml`，也可以使用 `.env`（更便于管理/备份）；务必避免提交到公开仓库。
 - **Token 泄露处理**：如 `BOT_TOKEN` 泄露，请立即联系 `@BotFather` 执行 `/revoke` 重置。
 
 ---
@@ -213,7 +157,7 @@ docker images | grep teleflux
 ## 故障排查
 
 ### 1) `repository name must be lowercase`
-这是 GHCR / Docker 对镜像引用格式的限制。请使用 README 中的“自动小写化”拉取命令，或手动将 `OWNER/REPO` 全部改为小写。
+这是 GHCR / Docker 对镜像引用格式的限制。请确保镜像地址中的 `owner/repo` 全小写（例如 `ghcr.io/weiyingiii/teleflux:latest`），不要直接复制带大写字母的 GitHub 仓库名。
 
 ### 2) `ModuleNotFoundError: No module named 'task_manager'`
 请确认镜像内包含 `task_manager.py`（Dockerfile 已显式 COPY），并确保没有 volume 覆盖 `/app` 导致镜像内文件被宿主目录“盖掉”。

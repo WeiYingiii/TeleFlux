@@ -1,17 +1,19 @@
 services:
   teleflux:
+    # Pull directly from GitHub Container Registry (GHCR).
+    # NOTE: GHCR requires the repository path to be lowercase.
+    image: ${TELEFLUX_IMAGE:-ghcr.io/weiyingiii/teleflux:latest}
     container_name: teleflux-bot
-    build:
-      context: .
-      dockerfile: Dockerfile
+    restart: unless-stopped
+
     environment:
-      # === Fill in these three parameters ===
-      API_ID: "YOUR_API_ID"
-      API_HASH: "YOUR_API_HASH"
-      BOT_TOKEN: "YOUR_BOT_TOKEN"
+      # === REQUIRED: fill these three parameters ===
+      API_ID: "${API_ID:-YOUR_API_ID}"
+      API_HASH: "${API_HASH:-YOUR_API_HASH}"
+      BOT_TOKEN: "${BOT_TOKEN:-YOUR_BOT_TOKEN}"
 
       # Optional
-      TZ: "Asia/Shanghai"
+      TZ: "${TZ:-Asia/Shanghai}"
 
       # Container internal paths (do not change unless you also change bot config)
       MUSIC_PATH: /data/Music
@@ -20,11 +22,11 @@ services:
       CACHE_PATH: /app/cache
 
     volumes:
-      # === Replace host paths with your actual folders ===
-      - "/vol2/1000/Music:/data/Music"
-      - "/vol2/1000/Video:/data/Video"
-      - "/vol2/1000/Download:/data/Download"
+      # Host directories. Defaults make the project runnable with only this YAML file.
+      # You can replace these with your NAS paths (e.g. /vol2/1000/Music:/data/Music).
+      - "${MUSIC_DIR:-./data/Music}:/data/Music"
+      - "${VIDEO_DIR:-./data/Video}:/data/Video"
+      - "${DOWNLOAD_DIR:-./data/Download}:/data/Download"
 
       # Keep cache persistent
-      - "./cache:/app/cache"
-    restart: unless-stopped
+      - "${CACHE_DIR:-./cache}:/app/cache"
