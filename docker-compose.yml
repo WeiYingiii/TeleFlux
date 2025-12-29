@@ -42,6 +42,8 @@ services:
       VIDEO_PATH: /data/Video
       DOWNLOAD_PATH: /data/Download
       CACHE_PATH: /app/cache
+      # Internal log file path (for /log command)
+      LOG_DIR: /app/logs
 
     volumes:
       # Host directories. Defaults make the project runnable with only this YAML file.
@@ -52,6 +54,9 @@ services:
 
       # Keep cache persistent
       - "${CACHE_DIR:-./cache}:/app/cache"
+
+      # Keep logs persistent (optional but recommended)
+      - "${LOG_DIR_HOST:-./logs}:/app/logs"
 
   # Auto-updater: checks GHCR every minute for new images.
   # If an update is found, it will stop the old container and start a new one.

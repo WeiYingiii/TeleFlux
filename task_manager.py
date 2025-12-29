@@ -50,6 +50,20 @@ class TaskManager:
         self.refresh_ui: Optional[RefreshCallback] = refresh_ui
         self.cleanup_delay_s = float(cleanup_delay_s)
 
+    async def snapshot(self) -> dict:
+        """Get a snapshot of current task counts for status reporting."""
+        async with self._lock:
+            active = dict(self._active)
+            pending_cleanup = sorted(
+                [cid for cid, t in self._cleanup_tasks.items() if t and not t.done()]
+            )
+
+        return {
+            "active": active,
+            "pending_cleanup": pending_cleanup,
+            "cleanup_delay_s": self.cleanup_delay_s,
+        }
+
     async def task_started(self, chat_id: int) -> None:
         """Must be called before/when a task is scheduled for a chat."""
         async with self._lock:
@@ -59,7 +73,7 @@ class TaskManager:
             t = self._cleanup_tasks.pop(chat_id, None)
             if t and not t.done():
                 t.cancel()
-            logger.info("Task started. chat_id=%s active=%s", chat_id, cur)
+            logger.info("任务开始：chat_id=%s，进行中=%s", chat_id, cur)
 
     async def task_finished(self, chat_id: int) -> int:
         """Must be called when a task reaches a terminal state.
@@ -74,7 +88,7 @@ class TaskManager:
             if self._active[chat_id] < 0:
                 self._active[chat_id] = 0
             remaining = self._active[chat_id]
-            logger.info("Task finished. chat_id=%s remaining=%s", chat_id, remaining)
+            logger.info("任务结束：chat_id=%s，剩余=%s", chat_id, remaining)
 
             # Schedule delayed cleanup only when chat becomes idle.
             if remaining == 0:
@@ -94,13 +108,13 @@ class TaskManager:
                 # Double-check: only cleanup if still idle.
                 if self._active.get(chat_id, 0) != 0:
                     logger.info(
-                        "Cleanup skipped (new tasks arrived). chat_id=%s active=%s",
+                        "清理已跳过：延迟期内有新任务加入。chat_id=%s，当前进行中=%s",
                         chat_id,
                         self._active.get(chat_id, 0),
                     )
                     return
 
-            logger.info("Idle for %ss. Running cleanup. chat_id=%s", self.cleanup_delay_s, chat_id)
+            logger.info("空闲超过 %ss，执行自动清理：chat_id=%s", self.cleanup_delay_s, chat_id)
             if self.refresh_ui is not None:
                 await self.refresh_ui(chat_id, True)
         except asyncio.CancelledError:

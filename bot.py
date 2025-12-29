@@ -17,6 +17,8 @@ from telethon.tl.types import (
 from telethon.errors.rpcerrorlist import MessageNotModifiedError
 from telethon.errors import FloodWaitError, RPCError
 import logging
+from logging.handlers import RotatingFileHandler
+from collections import deque
 
 from task_manager import TaskManager
 from runtime_settings import (
@@ -31,14 +33,65 @@ try:
 except Exception:  # pragma: no cover
     socks = None
 
-# 配置日志
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+LOG_DIR = os.getenv("LOG_DIR", "/app/logs")
+LOG_FILE = os.path.join(LOG_DIR, "teleflux.log")
+
+
+class _ChineseLevelFormatter(logging.Formatter):
+    _LEVEL_MAP = {
+        "DEBUG": "调试",
+        "INFO": "信息",
+        "WARNING": "警告",
+        "ERROR": "错误",
+        "CRITICAL": "致命",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        setattr(record, "levelname_cn", self._LEVEL_MAP.get(record.levelname, record.levelname))
+        return super().format(record)
+
+
+def _setup_logging() -> logging.Logger:
+    """Configure logging for container runtime.
+
+    Requirements from deployment:
+      - Container logs should be Chinese as much as possible.
+      - Provide an internal log file for Telegram /log streaming.
+    """
+
+    Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    fmt = _ChineseLevelFormatter(
+        fmt="%(asctime)s | %(name)s | %(levelname_cn)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler (stdout)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+
+    # Rotating file handler (for /log)
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    # Suppress noisy English logs from Telethon at INFO level.
+    logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("telethon.client.downloads").setLevel(logging.WARNING)
+
+    return logging.getLogger(__name__)
+
+
+logger = _setup_logging()
 
 # 项目版本
-VERSION = "1.0.13"
+VERSION = "1.0.15"
 
 # 从环境变量获取配置
 API_ID = os.getenv("API_ID")
@@ -296,9 +349,9 @@ telethon_proxy = None
 if proxy_url_effective:
     try:
         telethon_proxy = _telethon_proxy_from_url(proxy_url_effective)
-        logger.info("Proxy enabled (via settings/env).")
+        logger.info("已启用代理（来自设置/环境变量）。")
     except Exception as e:
-        logger.error("Invalid proxy config, ignored: %s (%s)", proxy_url_effective, e)
+        logger.error("代理配置无效，已忽略：%s（%s）", proxy_url_effective, e)
         telethon_proxy = None
 
 # 下载并发控制（避免 Telethon 同时打开过多连接导致卡住/超时）
@@ -1062,7 +1115,7 @@ async def download_with_progress(download_id: int):
             dc_id = getattr(doc, "dc_id", None)
             if dc_id is not None:
                 info["dc_id"] = dc_id
-                logger.info("Download target DC: chat_id=%s download_id=%s dc_id=%s", chat_id, download_id, dc_id)
+                logger.info("下载目标 DC：chat_id=%s download_id=%s dc_id=%s", chat_id, download_id, dc_id)
         except Exception:
             pass
 
@@ -1511,6 +1564,332 @@ def _is_admin_event(event) -> bool:
         return False
 
 
+# ===== 管理命令：日志与状态 =====
+_log_follow_sessions: Dict[tuple[int, int], asyncio.Task] = {}
+_status_watch_sessions: Dict[tuple[int, int], asyncio.Task] = {}
+
+
+def _parse_duration_seconds(token: str) -> Optional[int]:
+    """Parse duration token into seconds.
+
+    Supported forms:
+      - 120        (seconds)
+      - 30s
+      - 10m
+      - 2h
+      - 1d
+
+    Returns:
+      - int seconds on success
+      - None on parse failure
+    """
+    t = (token or "").strip().lower()
+    if not t:
+        return None
+
+    if t.isdigit():
+        try:
+            return max(1, int(t))
+        except Exception:
+            return None
+
+    unit = t[-1]
+    num = t[:-1]
+    if not num or not num.isdigit():
+        return None
+
+    try:
+        n = int(num)
+        if n <= 0:
+            return None
+    except Exception:
+        return None
+
+    mul = {
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+        "d": 86400,
+    }.get(unit)
+    if mul is None:
+        return None
+
+    return n * mul
+
+
+def _tail_lines(path: str, n: int) -> str:
+    """Return the last N lines of a UTF-8 text file."""
+    try:
+        n = max(1, min(int(n), 300))
+    except Exception:
+        n = 80
+
+    try:
+        dq: deque[str] = deque(maxlen=n)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                dq.append(line.rstrip("\n"))
+        return "\n".join(dq)
+    except FileNotFoundError:
+        return "(日志文件不存在)"
+    except Exception as e:
+        return f"(读取日志失败：{type(e).__name__}: {e})"
+
+
+def _clip_telegram(text: str, limit: int = 3800) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return "…\n" + text[-limit:]
+
+
+def _code_block(text: str) -> str:
+    return "```\n" + (text or "") + "\n```"
+
+
+async def _stop_session(sessions: Dict[tuple[int, int], asyncio.Task], key: tuple[int, int]) -> bool:
+    t = sessions.pop(key, None)
+    if t and not t.done():
+        t.cancel()
+        return True
+    return False
+
+
+@client.on(events.NewMessage(pattern=r"^/(log|logs)(?:\s+.*)?$"))
+async def log_command(event):
+    """查看容器内日志（中文输出）并支持短时跟随。
+
+    用法：
+      /log               查看最后 80 行
+      /log 200           查看最后 200 行（上限 300）
+      /log follow        跟随日志（每 2 秒刷新，默认持续直到手动 stop）
+      /log follow 10m    跟随日志 10 分钟
+      /log follow forever 跟随日志直到手动 stop
+      /log stop          停止跟随
+    """
+    if not _is_admin_event(event):
+        await event.respond("❌ 无权限：请在私聊中使用该命令，或设置 ADMIN_USER_IDS")
+        return
+
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    user_id = int(getattr(event, "sender_id", 0) or 0)
+    key = (chat_id, user_id)
+
+    text = (event.raw_text or "").strip()
+    tokens = text.split()
+    args = [a.strip() for a in tokens[1:]]
+    sub = (args[0].lower() if args else "")
+
+    if sub in {"stop", "end", "off"}:
+        stopped = await _stop_session(_log_follow_sessions, key)
+        await event.respond("✅ 已停止日志跟随" if stopped else "当前没有运行中的日志跟随")
+        return
+
+    if sub in {"follow", "f"}:
+        # Ensure only one session per user per chat.
+        await _stop_session(_log_follow_sessions, key)
+
+        duration_s: Optional[int] = None  # None => forever
+        if len(args) >= 2:
+            dur_token = (args[1] or "").strip().lower()
+            if dur_token in {"forever", "infinite", "inf", "always"}:
+                duration_s = None
+            else:
+                duration_s = _parse_duration_seconds(dur_token)
+                if duration_s is None:
+                    await event.respond(
+                        "❌ 无法识别的时长参数。示例：/log follow 10m 或 /log follow 120s 或 /log follow forever"
+                    )
+                    return
+
+        if duration_s is None:
+            duration_desc = "直到手动 stop"
+        else:
+            if duration_s % 3600 == 0:
+                duration_desc = f"{duration_s // 3600} 小时"
+            elif duration_s % 60 == 0:
+                duration_desc = f"{duration_s // 60} 分钟"
+            else:
+                duration_desc = f"{duration_s} 秒"
+
+        head = (
+            f"📄 TeleFlux 实时日志（{Path(LOG_FILE).name}）\n"
+            f"刷新：每 2 秒，持续：{duration_desc}\n\n"
+        )
+        init = _tail_lines(LOG_FILE, 80)
+        msg = await event.respond(head + _code_block(_clip_telegram(init)))
+
+        end_at: Optional[float] = None
+        if duration_s is not None:
+            end_at = asyncio.get_running_loop().time() + float(duration_s)
+
+        async def _runner():
+            try:
+                while True:
+                    await asyncio.sleep(2)
+                    if end_at is not None and asyncio.get_running_loop().time() >= end_at:
+                        break
+                    content = _tail_lines(LOG_FILE, 80)
+                    body = head + _code_block(_clip_telegram(content))
+                    try:
+                        await msg.edit(body)
+                    except MessageNotModifiedError:
+                        pass
+                    except Exception:
+                        # Ignore edit failures; continue.
+                        pass
+            except asyncio.CancelledError:
+                return
+            finally:
+                # Best-effort cleanup of session registry.
+                cur = asyncio.current_task()
+                if cur is not None:
+                    existing = _log_follow_sessions.get(key)
+                    if existing is cur:
+                        _log_follow_sessions.pop(key, None)
+
+                # If finite duration, optionally tell the user it ended.
+                if end_at is not None:
+                    try:
+                        await event.respond("⏹ 日志跟随已结束（已到时限）。可用 /log follow 继续，或 /log 查看尾部。")
+                    except Exception:
+                        pass
+
+        _log_follow_sessions[key] = asyncio.create_task(_runner())
+        return
+
+    # Tail mode
+    n = 80
+    if sub.isdigit():
+        n = int(sub)
+
+    content = _tail_lines(LOG_FILE, n)
+    await event.respond(
+        f"📄 TeleFlux 日志（最后 {min(max(1, n), 300)} 行）\n\n" + _code_block(_clip_telegram(content))
+    )
+
+
+def _summarize_task_states() -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for it in active_downloads.values():
+        st = str(it.get("state") or "unknown")
+        counts[st] = counts.get(st, 0) + 1
+    return counts
+
+
+async def _build_status_text(chat_id: int) -> str:
+    snap = await task_manager.snapshot()
+    active_map = snap.get("active", {}) or {}
+    total_active = 0
+    for v in active_map.values():
+        try:
+            total_active += int(v)
+        except Exception:
+            continue
+
+    chat_active = int(active_map.get(chat_id, 0) or 0)
+    pending_cleanup = snap.get("pending_cleanup", []) or []
+
+    state_counts = _summarize_task_states()
+
+    # Show up to 5 active rows for this chat
+    rows: List[str] = []
+    for did, it in list(active_downloads.items()):
+        if int(it.get("chat_id") or 0) != int(chat_id):
+            continue
+        name = str(it.get("display_name") or it.get("filename") or f"#{did}")
+        st = str(it.get("state") or "unknown")
+        dl = int(it.get("downloaded") or 0)
+        total = int(it.get("total") or 0)
+        pct = (dl / total * 100.0) if total > 0 else 0.0
+        rows.append(f"• {name} | {st} | {pct:.1f}%")
+        if len(rows) >= 5:
+            break
+    if not rows:
+        rows = ["• (当前聊天暂无活跃任务)"]
+
+    # Human-friendly state summary
+    def _cn_state(k: str) -> str:
+        mapping = {
+            "downloading": "下载中",
+            "paused": "已暂停",
+            "cancelling": "取消中",
+            "cancelled": "已取消",
+            "completed": "已完成",
+            "failed": "失败",
+        }
+        return mapping.get(k, k)
+
+    state_lines = []
+    for k in sorted(state_counts.keys()):
+        state_lines.append(f"- {_cn_state(k)}: {state_counts[k]}")
+    if not state_lines:
+        state_lines = ["- (无任务)"]
+
+    txt = (
+        "📊 TeleFlux 任务状态\n"
+        f"版本：v{VERSION}\n"
+        f"并发：{concurrency_limiter.get_running()}/{concurrency_limiter.get_limit()}\n"
+        f"任务计数：当前聊天 {chat_active} | 全部聊天 {total_active}\n"
+        f"待清理聊天：{len(pending_cleanup)}\n\n"
+        "状态统计：\n"
+        + "\n".join(state_lines)
+        + "\n\n"
+        "当前聊天任务预览：\n"
+        + "\n".join(rows)
+    )
+    return txt
+
+
+@client.on(events.NewMessage(pattern=r"^/status(?:\s+.*)?$"))
+async def status_command(event):
+    """查看任务状态，支持短时监控。\n\n用法：\n  /status\n  /status watch\n  /status stop"""
+    if not _is_admin_event(event):
+        await event.respond("❌ 无权限：请在私聊中使用该命令，或设置 ADMIN_USER_IDS")
+        return
+
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    user_id = int(getattr(event, "sender_id", 0) or 0)
+    key = (chat_id, user_id)
+
+    text = (event.raw_text or "").strip()
+    parts = text.split(maxsplit=1)
+    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    if arg in {"stop", "end", "off"}:
+        stopped = await _stop_session(_status_watch_sessions, key)
+        await event.respond("✅ 已停止状态监控" if stopped else "当前没有运行中的状态监控")
+        return
+
+    if arg in {"watch", "follow", "w"}:
+        await _stop_session(_status_watch_sessions, key)
+        msg = await event.respond("⏳ 正在启动状态监控…")
+
+        async def _runner():
+            try:
+                for _ in range(48):  # 240s, every 5s
+                    await asyncio.sleep(5)
+                    body = await _build_status_text(chat_id)
+                    try:
+                        await msg.edit(body)
+                    except MessageNotModifiedError:
+                        pass
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                return
+
+        _status_watch_sessions[key] = asyncio.create_task(_runner())
+        # Immediately render once
+        try:
+            await msg.edit(await _build_status_text(chat_id))
+        except Exception:
+            pass
+        return
+
+    await event.respond(await _build_status_text(chat_id))
+
+
 @client.on(events.NewMessage(pattern=r"^/concurrency(?:\s+.*)?$"))
 async def concurrency_command(event):
     """Set or show runtime concurrency limit.
@@ -1645,7 +2024,7 @@ async def _send_startup_notification() -> None:
         try:
             await client.send_message(cid, msg)
         except Exception as e:
-            logger.warning("Failed to send startup notification to %s: %s", cid, e)
+            logger.warning("启动通知发送失败：chat_id=%s，原因=%s", cid, e)
 
 
 def main():

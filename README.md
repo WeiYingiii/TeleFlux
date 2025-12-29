@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.13-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.15-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **Telegram → NAS 的“Flux 通道”**：将转发的文件自动归档到服务器目录，并提供实时可视化任务面板。
 
@@ -68,7 +68,7 @@
 ```yaml
 services:
   teleflux:
-    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.13
+    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.15
     image: ghcr.io/weiyingiii/teleflux:latest
     container_name: teleflux-bot
     restart: unless-stopped
@@ -98,6 +98,10 @@ services:
       VIDEO_PATH: /data/Video
       DOWNLOAD_PATH: /data/Download
       CACHE_PATH: /app/cache
+      # /log 命令读取容器内日志文件（建议持久化挂载）
+      LOG_DIR: /app/logs
+      # /log 命令会读取该路径下的日志文件
+      LOG_DIR: /app/logs
 
     volumes:
       # 将宿主机目录映射到容器（按您的 NAS 路径调整）
@@ -105,6 +109,7 @@ services:
       - /vol2/1000/Video:/data/Video
       - /vol2/1000/Download:/data/Download
       - ./cache:/app/cache
+      - ./logs:/app/logs
 
   watchtower:
     # NOTE: containrrr/watchtower 已归档，部分环境（如 Docker 29+）会出现 API 版本不兼容。
@@ -159,7 +164,7 @@ docker run -d \
   -v /vol2/1000/Video:/data/Video \
   -v /vol2/1000/Download:/data/Download \
   -v $(pwd)/cache:/app/cache \
-  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.13
+  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.15
 ```
 
 查看日志：
@@ -202,6 +207,28 @@ TeleFlux 提供少量 **/命令** 用于在线调参，无需进入容器改配�
 
 ```bash
 docker restart teleflux-bot
+```
+
+### 3) 查看容器日志（中文输出，支持跟随）
+
+> [!TIP]
+> 建议在 compose 中挂载 `./logs:/app/logs`，这样容器重建后日志仍保留。
+
+```text
+/log               查看最后 80 行
+/log 200           查看最后 200 行（上限 300）
+/log follow        跟随日志（每 2 秒刷新，默认持续直到手动 stop）
+/log follow 10m    跟随日志 10 分钟
+/log follow forever 跟随日志直到手动 stop
+/log stop          停止跟随
+```
+
+### 4) 查看与监控任务状态
+
+```text
+/status            查看当前任务状态
+/status watch      监控 4 分钟（每 5 秒刷新）
+/status stop       停止监控
 ```
 
 ---
