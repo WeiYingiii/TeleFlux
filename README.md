@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.12-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.13-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **Telegram → NAS 的“Flux 通道”**：将转发的文件自动归档到服务器目录，并提供实时可视化任务面板。
 
@@ -68,7 +68,7 @@
 ```yaml
 services:
   teleflux:
-    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.12
+    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.13
     image: ghcr.io/weiyingiii/teleflux:latest
     container_name: teleflux-bot
     restart: unless-stopped
@@ -107,7 +107,9 @@ services:
       - ./cache:/app/cache
 
   watchtower:
-    image: containrrr/watchtower:latest
+    # NOTE: containrrr/watchtower 已归档，部分环境（如 Docker 29+）会出现 API 版本不兼容。
+    # 这里使用可替代的维护分支镜像（用法兼容）。您也可通过 WATCHTOWER_IMAGE 环境变量自行覆盖。
+    image: nickfedor/watchtower:latest
     container_name: teleflux-watchtower
     restart: unless-stopped
     volumes:
@@ -120,6 +122,8 @@ services:
       - --label-enable   # 仅更新带 enable 标签的容器
     environment:
       TZ: "Asia/Shanghai"
+      # Docker 29+ 要求 Docker API >= 1.44；若看到 "client version 1.25 is too old"，请显式指定。
+      DOCKER_API_VERSION: "1.44"
 ```
 
 启动：
@@ -155,7 +159,7 @@ docker run -d \
   -v /vol2/1000/Video:/data/Video \
   -v /vol2/1000/Download:/data/Download \
   -v $(pwd)/cache:/app/cache \
-  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.12
+  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.13
 ```
 
 查看日志：

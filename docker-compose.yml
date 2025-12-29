@@ -57,7 +57,9 @@ services:
   # If an update is found, it will stop the old container and start a new one.
   # It will also delete the old container, anonymous volumes, and old images.
   watchtower:
-    image: containrrr/watchtower:latest
+    # NOTE: containrrr/watchtower has been archived and may not track newer Docker API changes.
+    # This fork is widely used as a drop-in replacement.
+    image: ${WATCHTOWER_IMAGE:-nickfedor/watchtower:latest}
     container_name: teleflux-watchtower
     restart: unless-stopped
     volumes:
@@ -71,3 +73,7 @@ services:
     # Optional: set your timezone for Watchtower logs
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      # Docker 29+ requires Docker API >= 1.44. Some Watchtower builds default to older API versions.
+      # Set this explicitly to avoid errors like:
+      #   "client version 1.25 is too old. Minimum supported API version is 1.44"
+      DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.44}"
