@@ -2,7 +2,7 @@
 
 # TeleFlux
 
-![Version](https://img.shields.io/badge/version-1.0.11-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.12-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white) ![Python](https://img.shields.io/badge/Telethon-Based-yellow.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **Telegram → NAS 的“Flux 通道”**：将转发的文件自动归档到服务器目录，并提供实时可视化任务面板。
 
@@ -58,15 +58,24 @@
 
 ### 方式 A：只创建一个 docker-compose.yml 即可运行（推荐）
 
-在任意目录新建 `docker-compose.yml`（把 `API_ID / API_HASH / BOT_TOKEN` 填上；目录映射按您的 NAS 实际路径改）：
+在任意目录新建 `docker-compose.yml`（把 `API_ID / API_HASH / BOT_TOKEN` 填上；目录映射按您的 NAS 实际路径改）。
+
+该单文件 compose **内置 Watchtower 自动更新**：
+- 每分钟检查一次镜像更新
+- 发现更新后停止旧容器并启动新容器
+- 删除旧容器、相关匿名卷（anonymous volumes）和旧镜像
 
 ```yaml
 services:
   teleflux:
-    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.11
+    # 可用 latest，或固定到某个版本号（更可控）：ghcr.io/weiyingiii/teleflux:1.0.12
     image: ghcr.io/weiyingiii/teleflux:latest
     container_name: teleflux-bot
     restart: unless-stopped
+
+    # 仅允许 Watchtower 更新带该标签的容器（避免误更新宿主机上的其他服务）
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
 
     environment:
       API_ID: "1234567"
@@ -96,6 +105,21 @@ services:
       - /vol2/1000/Video:/data/Video
       - /vol2/1000/Download:/data/Download
       - ./cache:/app/cache
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: teleflux-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --interval
+      - "60"            # 每 60 秒检查一次
+      - --cleanup        # 删除旧镜像
+      - --remove-volumes # 删除匿名卷
+      - --label-enable   # 仅更新带 enable 标签的容器
+    environment:
+      TZ: "Asia/Shanghai"
 ```
 
 启动：
@@ -131,7 +155,7 @@ docker run -d \
   -v /vol2/1000/Video:/data/Video \
   -v /vol2/1000/Download:/data/Download \
   -v $(pwd)/cache:/app/cache \
-  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.11
+  ghcr.io/weiyingiii/teleflux:latest  # 或固定版本：ghcr.io/weiyingiii/teleflux:1.0.12
 ```
 
 查看日志：

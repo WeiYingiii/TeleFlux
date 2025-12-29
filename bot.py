@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 项目版本
-VERSION = "1.0.11"
+VERSION = "1.0.12"
 
 # 从环境变量获取配置
 API_ID = os.getenv("API_ID")

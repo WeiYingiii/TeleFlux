@@ -6,6 +6,10 @@ services:
     container_name: teleflux-bot
     restart: unless-stopped
 
+    # Watchtower will only update containers with this label (safer on shared hosts).
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
     environment:
       # === REQUIRED: fill these three parameters ===
       API_ID: "${API_ID:-YOUR_API_ID}"
@@ -48,3 +52,22 @@ services:
 
       # Keep cache persistent
       - "${CACHE_DIR:-./cache}:/app/cache"
+
+  # Auto-updater: checks GHCR every minute for new images.
+  # If an update is found, it will stop the old container and start a new one.
+  # It will also delete the old container, anonymous volumes, and old images.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: teleflux-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - --interval
+      - "60"
+      - --cleanup
+      - --remove-volumes
+      - --label-enable
+    # Optional: set your timezone for Watchtower logs
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
